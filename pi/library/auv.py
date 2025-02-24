@@ -1,12 +1,10 @@
 import numpy as np
-import time
-import quaternion
 import traceback
-from typing import Callable
+from typing import Callable, List
 
 from pi.library.motor_controller import MotorController
 from sensor_interface import SensorInterface
-from mission import Path
+from mission import Path, Subtask
 from logger import Logger, LogLevel
 
 class AUV:
@@ -44,7 +42,13 @@ class AUV:
         self.motor_controller.initialize()
         self.sensors.initialize()
 
+        self.subtasks: List[Subtask] = []
 
+    def register_subtask(self, subtask):
+        self.subtasks.append(subtask)
+
+    def kill(self):
+        self.motor_controller.set_motors(np.array(0 for _ in self.motor_controller.motors))
 
     def travel_path(self, mission: Path) -> None:
         """Execute each Task in the given Path, in order, then kill the sub. Handles errors."""
@@ -55,14 +59,15 @@ class AUV:
             for task in mission.path:
                 self.logger.log(f"Beginning task {task.name}")
                 while(not task.finished):
-                    self.motor_controller.travel(task.update(self.sensors) + self.pid_manager.wanted())
+                    wanted_direction = task.update(self.sensors)
+                    wanted_direction += np.array(np.sum(subtask.update(self.sensors, wanted_direction)) for subtask in self.subtasks)
 
         except:
             self.logger.log(traceback.format_exc())
     
         finally:
             self.logger.log("Killing sub")
-            if(not self.motor_controller.killed()):
+            if(not self.sensors.killed()):
                 kill_methods = [
                 ("kill", self.kill),
                 # kill through sub interface, uses full library to send kill. should always work

@@ -25,12 +25,12 @@ class InertiaGeometry(ABC):
     
     def rotate_to_vector(self, inertia, current_facing, to_face):
         
-        if(np.isclose(current_facing, to_face)):
-            return self.inertia_tensor()
+        if(np.all(np.isclose(current_facing, to_face))):
+            return inertia
             
         rotation_axis = np.cross(to_face, current_facing)
         rotation_axis /= np.linalg.norm(rotation_axis)
-        rotation_angle = np.arccos(np.dot(to_face, self.facing))
+        rotation_angle = np.arccos(np.dot(to_face, current_facing))
 
         K = np.array([
             [0, -rotation_axis[2], rotation_axis[1]],
@@ -117,5 +117,4 @@ class InertiaBuilder:
 
         return total_inertia
 
-
-HollowCylinder(1, 1, 1, 1, 1, np.array([0, 0, 1])).inertia_tensor()
+# HollowCylinder(1, 1, 1, 1, 1, np.array([0, 0, 1])).inertia_tensor()

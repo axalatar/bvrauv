@@ -1,5 +1,6 @@
 import numpy as np
 from abc import ABC, abstractmethod
+import quaternion
 
 # The abstract interface for interacting with the hardware; this should be
 # extended and registered into the auv
@@ -22,6 +23,10 @@ class ImuInterface(ABC):
     def initialize(self) -> None:
         pass
 
+    @abstractmethod
+    def overview(self) -> None:
+        pass
+
 class DepthInterface(ABC):
 
     def __init__(self):
@@ -36,6 +41,10 @@ class DepthInterface(ABC):
     def initialize(self) -> None:
         pass
 
+    @abstractmethod
+    def overview(self) -> None:
+        pass
+
 class SensorInterface:
 
     def __init__(self, *, imu: ImuInterface, depth: DepthInterface):
@@ -46,3 +55,7 @@ class SensorInterface:
     def initialize(self) -> None:
         self.imu.initialize()
         self.depth.initialize()
+
+    def overview(self) -> None:
+        self.imu.overview()
+        self.depth.overview()

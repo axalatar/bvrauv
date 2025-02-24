@@ -1,21 +1,91 @@
 from typing import List, Callable, Optional
 import numpy as np
-from pulp import LpVariable, LpBinary, LpProblem, LpMinimize, lpSum, PULP_CBC_CMD, LpStatus, value # type: ignore
-import time
+from gurobipy import GRB, Model, quicksum
+import quaternion
 
-from velocity_state import VelocityState
 from logger import LogLevel
 
+
+class DeadzoneOptimizer:
+    #TODO actually document any of this
+    # ok just for future reference b4 documentation bounds are like (-1, 1) and deadzones are like (0.1, 0.1). 
+    # deadzones do not go negative! might change in future. probably will use ranges from motors?
+    # need 1 per motor, so both are lists
+    def __init__(self, M, bounds, deadzones):
+        self.M = M
+        self.bounds = bounds
+        self.deadzones = deadzones
+        self.m, self.n = M.shape
+
+        self.model = Model("MIQP_deadzone") # miqp = mixed integer quadratic programming
+        # quadratic because it minimized the sum of squares of elements of the matrix
+        # integer because it uses boolean variables to determine what side of the deadzone the continous variables are on
+        # mixed because it also has continuous
+        # programming meaning optimization, because it minimizes the sum of squares
+
+        self.u = {}
+        for i in range(self.n):
+            self.u[i] = self.model.addVar(lb=bounds[i][0], ub=bounds[i][1], vtype=GRB.CONTINUOUS, name=f"u_{i}")
+
+        self.z = self.model.addVars(self.n, vtype=GRB.BINARY, name="z")
+        self.s = self.model.addVars(self.n, vtype=GRB.BINARY, name="s")
+
+        self.M0 = max(abs(b) for bound in bounds for b in bound)
+
+        for i in range(self.n):
+            self.model.addConstr(self.u[i] >= -self.z[i] * bounds[i][1], name=f"u_lower_bound_{i}")
+            self.model.addConstr(self.u[i] <= self.z[i] * bounds[i][1], name=f"u_upper_bound_{i}")
+
+        for i in range(self.n):
+            self.model.addGenConstrIndicator(self.z[i], 1,
+                self.u[i] - deadzones[i][1] * self.s[i] + self.M0 * (1 - self.s[i]),
+                GRB.GREATER_EQUAL, 0, name=f"deadzone_lower_{i}")
+
+            self.model.addGenConstrIndicator(self.z[i], 1,
+                self.u[i] - self.M0 * self.s[i] + deadzones[i][0] * (1 - self.s[i]),
+                GRB.LESS_EQUAL, 0, name=f"deadzone_upper_{i}")
+
+        self.constrs = []
+        for j in range(self.m):
+            expr = quicksum(self.M[j, i] * self.u[i] for i in range(self.n))
+            self.constrs.append(self.model.addConstr(expr == 0, name=f"eq_row_{j}"))
+
+        self.model.setObjective(quicksum(self.u[i] * self.u[i] for i in range(self.n)), GRB.MINIMIZE)
+
+        self.model.Params.OutputFlag = 0
+        self.model.update()
+
+    def optimize(self, V, M):
+        # print(V)
+        # print(M)
+
+        for j in range(self.m):
+            for i in range(self.n):
+                self.model.chgCoeff(self.constrs[j], self.u[i], M[j, i])
+            self.constrs[j].RHS = V[j]
+
+        # self.model.optimize()
+
+        # if(self.model.status == GRB.OPTIMAL):
+            # return True, np.array([self.u[i].X for i in range(self.n)])
+
+        self.model.feasRelaxS(1, False, False, True) # finds nearest feasible solution
+        self.model.optimize()
+
+        if self.model.status == GRB.OPTIMAL:
+            return False, np.array([self.u[i].X for i in range(self.n)])
+
+        return False, None
 
 
 class Motor:
 
     class Range:
-        def __init__(self, top: float, bottom: float):
+        def __init__(self, bottom: float, top: float):
             self.max = top
             self.min = bottom
 
-    def __init__(self, thrust_vector: np.ndarray, position: np.ndarray, set_motor: Callable, initialize: Callable, upper_bound: Range, lower_bound: Range):
+    def __init__(self, thrust_vector: np.ndarray, position: np.ndarray, set_motor: Callable, initialize: Callable, bounds: Range, deadzone: Range):
         self.thrust_vector: np.ndarray = thrust_vector
         self.position: np.ndarray = position
         self.set: Callable = set_motor
@@ -24,8 +94,8 @@ class Motor:
         self.inertia_tensor: Optional[np.ndarray] = None
         self.torque_vector: Optional[np.ndarray] = None
 
-        self.upper_bound: Motor.Range = upper_bound
-        self.lower_bound: Motor.Range = lower_bound
+        self.bounds: Motor.Range = bounds
+        self.deadzone: Motor.Range = deadzone
 
     def set_inertia_tensor(self, inertia_tensor):
         self.inertia_tensor = inertia_tensor
@@ -39,14 +109,14 @@ class MotorController:
         self.motors: np.ndarray = np.array(motors)   # the list of motors this sub owns
         self.log: Callable = lambda str, level=None: print(f"Motor logger is not set --- {str}")
 
-        self.motor_matrix = np.array([])
+        self.optimizer: Optional[DeadzoneOptimizer] = None
 
         for motor in motors:
             motor.set_inertia_tensor(self.inertia)
 
-        self.reset_motor_matrix()
-
-        self.last_command = VelocityState()
+        self.motor_matrix = None
+        self.mT = None
+        self.reset_optimizer()
 
     def overview(self) -> None:
         self.log("---Motor controller overview---")
@@ -64,80 +134,70 @@ class MotorController:
 
         self.log(f"Motors initalized with {problems} problem{"" if problems==1 else "s"}", level=level)
     
-    def reset_motor_matrix(self):
+    def reset_optimizer(self):
+        bounds = []
+        deadzones = []
+
         for i, motor in enumerate(self.motors):
             new_vector = np.array([np.concatenate([motor.thrust_vector, self.inertia @ motor.torque_vector], axis=None)]).T
-
             if(i == 0):
                 self.motor_matrix = new_vector
             else:
                 self.motor_matrix = np.hstack((self.motor_matrix, new_vector))
 
-    def solve_motor_system(self, wanted_vector, M_big=1000):
+            bounds.append((motor.bounds.min, motor.bounds.max))
+            deadzones.append((motor.deadzone.min, motor.deadzone.max))
+        self.optimizer = DeadzoneOptimizer(self.motor_matrix, bounds, deadzones)
+        self.mT = self.motor_matrix.T
 
-        # this code sucks! it definitely can be turned into a way simpler math problem, which would
-        # make it way faster and more readable
+    def rotate(self, rotation):
+        rotated_vectors = []
+        for vec in self.mT:
+            split_vec = np.split(vec, [3])
+            # a = []
+            # a.extend([quaternion.rotate_vectors(rotation, split_vec)])
+            # print(a)
+            rotated_vectors.append([val for sublist in quaternion.rotate_vectors(rotation, split_vec) for val in sublist])
 
-        start = time.time()
-        M = self.motor_matrix
-
-        n = M.shape[1]  # number of variables
-        
-        problem = LpProblem("Motor_Solver", LpMinimize)
-        
-        u = [LpVariable(f'u_{i}', -1, 1) for i in range(n)]
-        b1 = [LpVariable(f'b1_{i}', 0, 1, LpBinary) for i in range(n)]  # negative range
-        b2 = [LpVariable(f'b2_{i}', 0, 1, LpBinary) for i in range(n)]  # positive range
-        
-        
-        abs_u = [LpVariable(f'abs_u_{i}') for i in range(n)]
-        for i in range(n):
-            problem += abs_u[i] >= u[i]
-            problem += abs_u[i] >= -u[i]
-        
-        for i in range(len(wanted_vector)):
-            problem += lpSum(M[i,j] * u[j] for j in range(n)) == wanted_vector[i]
-        
-        for i in range(n):
-            motor = self.motors[i]
-            bottom = motor.lower_bound
-            top = motor.upper_bound
-
-            problem += b1[i] + b2[i] <= 1
-            
-            problem += u[i] >= bottom.min * b1[i] + top.min * b2[i]
-            problem += u[i] <= bottom.max * b1[i] + top.max * b2[i]
-            
-            problem += u[i] <= (max(abs(bottom.max), abs(top.max))) * (b1[i] + b2[i])
-            problem += u[i] >= (-max(abs(bottom.min), abs(top.min))) * (b1[i] + b2[i])
-        
-        problem += lpSum([M_big * (b1[i] + b2[i]) + abs_u[i] for i in range(n)])
-
-        status = problem.solve(PULP_CBC_CMD(msg=False))
-        
-        length = (time.time() - start) * 1000
-
-        if LpStatus[status] == "Optimal":
-            activation_vector = np.array([value(u[i]) for i in range(n)])
-            self.log(f"Succesfully solved target vector {wanted_vector} with activation vector {activation_vector} in {length} milliseconds")
-            return activation_vector
-        else:
-            self.log(f"Failed to solve target vector {wanted_vector} after {length} milliseconds", level=LogLevel.ERROR)
-            return None
+        return np.array(rotated_vectors).T
 
 
-# from inertia import *
+    def solve(self, wanted_vector, rotation):
+        # print(self.motor_matrix)
+        # print(self.rotate(rotation))
+        # raise Exception()
+        return self.optimizer.optimize(wanted_vector, self.rotate(rotation))
+    
+    def set_motors(self, motor_speeds):
+        for i, motor in enumerate(self.motors):
+            motor.set(motor_speeds[i])
 
 
-# test = MotorController(inertia=InertiaBuilder(Cuboid(10, np.array([0, 0, 0]), 5, 5, 1)).moment_of_inertia(), 
-#                        motors=[
-#                            Motor(np.array([1, 1, 0]), np.array([-1, 1, 0]), lambda _: 0, lambda _: 0, Motor.Range(1, 0.1), Motor.Range(-0.1, -1)),
-#                            Motor(np.array([-1, 1, 0]), np.array([1, 1, 0]), lambda _: 0, lambda _: 0, Motor.Range(1, 0.1), Motor.Range(-0.1, -1)),
-#                            Motor(np.array([-1, 1, 0]), np.array([-1, -1, 0]), lambda _: 0, lambda _: 0, Motor.Range(1, 0.1), Motor.Range(-0.1, -1)),
-#                            Motor(np.array([1, 1, 0]), np.array([1, -1, 0]), lambda _: 0, lambda _: 0, Motor.Range(1, 0.1), Motor.Range(-0.1, -1))
-#                            ]
-#                        )
+from inertia import *
 
-# solution = test.solve_motor_system(np.array([0.1, 1, 0, 0, 0, 20]))
 
-# print(solution)
+test = MotorController(inertia=InertiaBuilder(Cuboid(10, np.array([0, 0, 0]), 5, 5, 1)).moment_of_inertia(), 
+                       motors=[
+                            Motor(np.array([-1, 1, 0]), np.array([-1, -1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
+                            Motor(np.array([1, 1, 0]), np.array([1, -1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
+                            Motor(np.array([1, 1, 0]), np.array([-1, 1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
+                            Motor(np.array([-1, 1, 0]), np.array([1, 1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
+                            Motor(np.array([0, 0, 1]), np.array([0, 0.5, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
+                            Motor(np.array([0, 0, 1]), np.array([0, -0.5, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11))
+                           ]
+                       )
+
+# target = np.array([0.9,0,0,0,0,0])
+# print(test.solve(target, quaternion.from_euler_angles(np.deg2rad(0), 0, 0)))
+# # test.set_motors(test.solve(target)[1])
+# # print(quaternion.rotate_vectors(np.quaternion(1,0,0,0), np.array([np.array([1,1,1]), np.array([1,1,1])])))
+# import time
+# avg = 0.
+# count = 0
+# for i in np.linspace(-1, 1, 1000):
+#     count += 1
+#     start = time.time()
+#     test.solve(np.array([i, 0, 0, 0, 0, 0]), quaternion.from_euler_angles(0, 0, 0))
+#     avg += time.time() - start
+
+# print(f"Average time taken: {(avg / count) * 1000} milliseconds")
