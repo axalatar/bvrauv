@@ -2,10 +2,10 @@ import numpy as np
 import traceback
 from typing import Callable, List
 
-from pi.library.motor_controller import MotorController
-from sensor_interface import SensorInterface
-from mission import Path, Subtask
-from logger import Logger, LogLevel
+from .motor_controller import MotorController
+from .sensor_interface import SensorInterface
+from .mission import Path, Subtask
+from .logger import Logger, LogLevel
 
 class AUV:
     def __init__(self, *,
@@ -48,7 +48,7 @@ class AUV:
         self.subtasks.append(subtask)
 
     def kill(self):
-        self.motor_controller.set_motors(np.array(0 for _ in self.motor_controller.motors))
+        self.motor_controller.set_motors(np.array([0 for _ in range(6)]))
 
     def travel_path(self, mission: Path) -> None:
         """Execute each Task in the given Path, in order, then kill the sub. Handles errors."""
@@ -58,15 +58,34 @@ class AUV:
         try:
             for task in mission.path:
                 self.logger.log(f"Beginning task {task.name}")
+                # print(task.finished)
                 while(not task.finished):
                     wanted_direction = task.update(self.sensors)
-                    wanted_direction += np.array(np.sum(subtask.update(self.sensors, wanted_direction)) for subtask in self.subtasks)
+                    
+                    # total_subtask = np.array([0., 0., 0.])
+                    # print(wanted_direction)
+                    # print(np.sum([subtask.update(self.sensors, wanted_direction) for subtask in self.subtasks]))
+                    for subtask in self.subtasks:
+                        wanted_direction += subtask.update(self.sensors, wanted_direction)
+                    # wanted_direction += np.sum([subtask.update(self.sensors, wanted_direction) for subtask in self.subtasks])
+                    
+                    solved_motors = self.motor_controller.solve(
+                        wanted_direction,
+                        self.sensors.imu.get_rotation()
+                    )
+                    # print(solved_motors[1])
+                    if(solved_motors[0]):
+                        # print("test")
+                        self.motor_controller.set_motors(solved_motors[1])
+                    
 
         except:
-            self.logger.log(traceback.format_exc())
+            self.logger.log(traceback.format_exc(), level=LogLevel.ERROR)
     
         finally:
             self.logger.log("Killing sub")
+
+
             if(not self.sensors.killed()):
                 kill_methods = [
                 ("kill", self.kill),
@@ -78,15 +97,15 @@ class AUV:
                 ]
                 # when we get more kills (eg hardware kill once we connect it to raspi) add them here
             
-            for method_name, method in kill_methods:
-                self.logger.log(f"Attempting {method_name}...")
-                method()
-                if self.sensors.killed():
-                    self.logger.log(f"{method_name.capitalize()} succeeded")
-                    break
+                for method_name, method in kill_methods:
+                    self.logger.log(f"Attempting {method_name}...")
+                    method()
+                    if self.sensors.killed():
+                        self.logger.log(f"{method_name.capitalize()} succeeded")
+                        break
+                    else:
+                        self.logger.log(f"{method_name.capitalize()} failed", level=LogLevel.ERROR)
                 else:
-                    self.logger.log(f"{method_name.capitalize()} failed", level=LogLevel.ERROR)
-            else:
-                self.logger.log("All kills ineffective. Manual intervention required", level=LogLevel.ERROR)
+                    self.logger.log("All kills ineffective. Manual intervention required", level=LogLevel.ERROR)
             
             self.logger.end()

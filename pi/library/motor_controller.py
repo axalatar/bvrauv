@@ -3,7 +3,7 @@ import numpy as np
 from gurobipy import GRB, Model, quicksum
 import quaternion
 
-from logger import LogLevel
+from .logger import LogLevel
 
 
 class DeadzoneOptimizer:
@@ -62,18 +62,21 @@ class DeadzoneOptimizer:
         for j in range(self.m):
             for i in range(self.n):
                 self.model.chgCoeff(self.constrs[j], self.u[i], M[j, i])
+            
             self.constrs[j].RHS = V[j]
+
+        # print(len(self.constrs))
 
         # self.model.optimize()
 
         # if(self.model.status == GRB.OPTIMAL):
             # return True, np.array([self.u[i].X for i in range(self.n)])
 
-        self.model.feasRelaxS(1, False, False, True) # finds nearest feasible solution
+        # self.model.feasRelaxS(1, False, False, True) # finds nearest feasible solution
         self.model.optimize()
 
         if self.model.status == GRB.OPTIMAL:
-            return False, np.array([self.u[i].X for i in range(self.n)])
+            return True, np.array([self.u[i].X for i in range(self.n)])
 
         return False, None
 
@@ -139,6 +142,7 @@ class MotorController:
         deadzones = []
 
         for i, motor in enumerate(self.motors):
+            # print(motor.thrust_vector)
             new_vector = np.array([np.concatenate([motor.thrust_vector, self.inertia @ motor.torque_vector], axis=None)]).T
             if(i == 0):
                 self.motor_matrix = new_vector
@@ -166,38 +170,45 @@ class MotorController:
         # print(self.motor_matrix)
         # print(self.rotate(rotation))
         # raise Exception()
+        # wanted_vector = 
+        # print(self.optimizer.optimize(np.array([0., 0., 0., 0., 0., 1.]), self.rotate(rotation)))
         return self.optimizer.optimize(wanted_vector, self.rotate(rotation))
     
     def set_motors(self, motor_speeds):
+        # print([f"{motor_speeds[i]}, {i}" for i in range(len(motor_speeds))])
+        # print(len(motor_speeds))
+        # print(motor_speed)
+        # print(self.motor_matrix)
+        # print(motor_speeds)
         for i, motor in enumerate(self.motors):
             motor.set(motor_speeds[i])
 
 
-from inertia import *
+# from inertia import *
 
 
-test = MotorController(inertia=InertiaBuilder(Cuboid(10, np.array([0, 0, 0]), 5, 5, 1)).moment_of_inertia(), 
-                       motors=[
-                            Motor(np.array([-1, 1, 0]), np.array([-1, -1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
-                            Motor(np.array([1, 1, 0]), np.array([1, -1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
-                            Motor(np.array([1, 1, 0]), np.array([-1, 1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
-                            Motor(np.array([-1, 1, 0]), np.array([1, 1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
-                            Motor(np.array([0, 0, 1]), np.array([0, 0.5, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
-                            Motor(np.array([0, 0, 1]), np.array([0, -0.5, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11))
-                           ]
-                       )
+# test = MotorController(inertia=InertiaBuilder(Cuboid(10, np.array([0, 0, 0]), 5, 5, 1)).moment_of_inertia(), 
+#                        motors=[
+#                             Motor(np.array([-1, 1, 0]), np.array([-1, -1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
+#                             Motor(np.array([1, 1, 0]), np.array([1, -1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
+#                             Motor(np.array([1, 1, 0]), np.array([-1, 1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
+#                             Motor(np.array([-1, 1, 0]), np.array([1, 1, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
+#                             Motor(np.array([0, 0, 1]), np.array([0, 0.5, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11)),
+#                             Motor(np.array([0, 0, 1]), np.array([0, -0.5, 0]), lambda num: print(num), lambda _: 0, Motor.Range(-0.2, 0.2), Motor.Range(0.11, 0.11))
+#                            ]
+#                        )
 
-# target = np.array([0.9,0,0,0,0,0])
-# print(test.solve(target, quaternion.from_euler_angles(np.deg2rad(0), 0, 0)))
-# # test.set_motors(test.solve(target)[1])
-# # print(quaternion.rotate_vectors(np.quaternion(1,0,0,0), np.array([np.array([1,1,1]), np.array([1,1,1])])))
-# import time
-# avg = 0.
-# count = 0
-# for i in np.linspace(-1, 1, 1000):
-#     count += 1
-#     start = time.time()
-#     test.solve(np.array([i, 0, 0, 0, 0, 0]), quaternion.from_euler_angles(0, 0, 0))
-#     avg += time.time() - start
+# # target = np.array([0.9,0,0,0,0,0])
+# # print(test.solve(target, quaternion.from_euler_angles(np.deg2rad(0), 0, 0)))
+# # # test.set_motors(test.solve(target)[1])
+# # # print(quaternion.rotate_vectors(np.quaternion(1,0,0,0), np.array([np.array([1,1,1]), np.array([1,1,1])])))
+# # import time
+# # avg = 0.
+# # count = 0
+# # for i in np.linspace(-1, 1, 1000):
+# #     count += 1
+# #     start = time.time()
+# #     test.solve(np.array([i, 0, 0, 0, 0, 0]), quaternion.from_euler_angles(0, 0, 0))
+# #     avg += time.time() - start
 
-# print(f"Average time taken: {(avg / count) * 1000} milliseconds")
+# # print(f"Average time taken: {(avg / count) * 1000} milliseconds")
