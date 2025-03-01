@@ -5,6 +5,8 @@ from scipy.ndimage import rotate
 from .simulation_animator import SimulationAnimator
 from scipy.spatial.transform import Rotation as R
 
+from ..simulation.simulation_animator import set_text
+
 import quaternion
 
 # kinda sucks, 2d
@@ -33,14 +35,27 @@ class Simulation:
 
         self.bounds = bounds
         self.deadzone = deadzone
+
+        self.rng = np.random.default_rng(int(100))
+
+        self.real_accel = np.array([0., 0.])
+        self.prev_vel = np.array([0., 0.])
     
     def simulate(self, time):
+        # set_text(str(self.rotation))
+        
         for timepoint in np.arange(self.prevtime, time, self.timestep):
+            self.real_accel = (self.velocity - self.prev_vel) / self.timestep
+            self.prev_vel = self.acceleration
+
+            self.velocity += (self.rng.random() - 0.5) * 0.01
+            self.rotational_velocity += ((2 * (self.rng.random() - 0.5))) * 0.1
             self.location += self.velocity * self.timestep
             # print(self.acceleration)
             # print(self.timestep)
             self.velocity += self.acceleration * self.timestep
-            self.rotation += self.rotational_velocity * self.timestep
+            self.rotation = (self.rotation + self.rotational_velocity * self.timestep) % 360
+
             self.rotational_velocity += self.rotational_acceleration * self.timestep
             rotation = R.from_euler('z', np.deg2rad(self.rotation))
             
@@ -112,18 +127,23 @@ class Simulation:
         return self.FakeDepthSensor(dev)
     
     def imu(self, dev):
-        return self.FakeIMU(dev, lambda: self.acceleration, lambda: quaternion.from_euler_angles([self.rotation, 0, 0]))
+        return self.FakeIMU(dev, lambda: self.real_accel, lambda: quaternion.from_euler_angles([np.deg2rad(self.rotation), 0., 0.]))
     
     def set(self, index, speed):
             
             speed = max(min(speed, self.bounds[index][1]), self.bounds[index][0])
             if(self.deadzone[index][0] > speed > self.deadzone[index][1]):
                 speed = 0
+            # set_text(str(speed))
             self.motor_speeds[index] = self.motor_directions[index] * speed
             # print(self.motor_speeds)
     
     def set_motor(self, index):
         return lambda speed: self.set(index, speed)
+    
+    def apply_force(self, *, thrust, rotation):
+        self.velocity += thrust
+        self.rotational_velocity += rotation
         
 
         

@@ -1,6 +1,7 @@
 from ..mission import Subtask
 from ..sensor_interface import SensorInterface
 from ..simulation.simulation import Simulation
+from ..simulation.simulation_animator import set_text
 
 import numpy as np
 import time
@@ -20,7 +21,8 @@ class Simulate(Subtask):
     def update(self, sensors: SensorInterface, wanted_speed: np.ndarray) -> np.ndarray:
         new_time = time.time()
         if(self.prevtime != -1):
+            # set_text(str(new_time - self.prevtime))
             self.simulation.simulate(new_time - self.prevtime)
-        self.prevtime = new_time
+        self.prevtime = time.time()
         return np.array([0., 0., 0., 0., 0., 0.])
         

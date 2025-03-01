@@ -2,8 +2,10 @@ from typing import List, Callable, Optional
 import numpy as np
 from gurobipy import GRB, Model, quicksum
 import quaternion
+import time
 
 from .logger import LogLevel
+from .simulation.simulation_animator import set_text
 
 
 class DeadzoneOptimizer:
@@ -23,19 +25,24 @@ class DeadzoneOptimizer:
         # mixed because it also has continuous
         # programming meaning optimization, because it minimizes the sum of squares
 
+        self.eps = self.model.addVars(self.m, lb=-float('inf'), vtype=GRB.CONTINUOUS, name="eps")
+
         self.u = {}
         for i in range(self.n):
             self.u[i] = self.model.addVar(lb=bounds[i][0], ub=bounds[i][1], vtype=GRB.CONTINUOUS, name=f"u_{i}")
 
         self.z = self.model.addVars(self.n, vtype=GRB.BINARY, name="z")
         self.s = self.model.addVars(self.n, vtype=GRB.BINARY, name="s")
+        
 
         self.M0 = max(abs(b) for bound in bounds for b in bound)
 
         for i in range(self.n):
             self.model.addConstr(self.u[i] >= -self.z[i] * bounds[i][1], name=f"u_lower_bound_{i}")
             self.model.addConstr(self.u[i] <= self.z[i] * bounds[i][1], name=f"u_upper_bound_{i}")
+            # either bounded in (-b, b) or (0, 0)
 
+        
         for i in range(self.n):
             self.model.addGenConstrIndicator(self.z[i], 1,
                 self.u[i] - deadzones[i][1] * self.s[i] + self.M0 * (1 - self.s[i]),
@@ -45,42 +52,57 @@ class DeadzoneOptimizer:
                 self.u[i] - self.M0 * self.s[i] + deadzones[i][0] * (1 - self.s[i]),
                 GRB.LESS_EQUAL, 0, name=f"deadzone_upper_{i}")
 
+
         self.constrs = []
         for j in range(self.m):
-            expr = quicksum(self.M[j, i] * self.u[i] for i in range(self.n))
+            expr = quicksum(self.M[j, i] * (self.u[i]) for i in range(self.n)) + self.eps[j]
+            # expr = self.eps[j] - 1
+            # expr = quicksum(M[j, i] * self.u[i] for i in range(self.n))
+            # expr = 1 - self.eps[j]
             self.constrs.append(self.model.addConstr(expr == 0, name=f"eq_row_{j}"))
-
-        self.model.setObjective(quicksum(self.u[i] * self.u[i] for i in range(self.n)), GRB.MINIMIZE)
+            # matrix multiplication must be true
 
         self.model.Params.OutputFlag = 0
         self.model.update()
 
-    def optimize(self, V, M):
-        # print(V)
-        # print(M)
+        
 
+    def optimize(self, V, M):
         for j in range(self.m):
+            self.constrs[j].setAttr(GRB.Attr.RHS, V[j])
             for i in range(self.n):
                 self.model.chgCoeff(self.constrs[j], self.u[i], M[j, i])
-            
-            self.constrs[j].RHS = V[j]
 
-        # print(len(self.constrs))
-
-        # self.model.optimize()
-
-        # if(self.model.status == GRB.OPTIMAL):
-            # return True, np.array([self.u[i].X for i in range(self.n)])
-
-        # self.model.feasRelaxS(1, False, False, True) # finds nearest feasible solution
+        self.model.setObjective(quicksum(self.eps[j] * self.eps[j] for j in range(self.m)), GRB.MINIMIZE)
         self.model.optimize()
 
+        if self.model.status != GRB.OPTIMAL:
+            return False, None
+
+
+        eps_opt = [self.eps[j].X for j in range(self.m)]
+        # print(eps_opt)
+        # if(not np.all(np.isclose(eps_opt, 0.0))):
+            # set_text("rotation: " + " ".join(str(t) for t in V))
+            # print(V[5])
+        
+        for j in range(self.m):
+            self.eps[j].LB = eps_opt[j]
+            self.eps[j].UB = eps_opt[j]
+
+        self.model.setObjective(quicksum(self.u[i] * self.u[i] for i in range(self.n)), GRB.MINIMIZE)
+        self.model.optimize()
+
+        for j in range(self.m):
+            self.eps[j].LB = -float('inf')
+            self.eps[j].UB = float('inf')
         if self.model.status == GRB.OPTIMAL:
             return True, np.array([self.u[i].X for i in range(self.n)])
 
         return False, None
 
 
+test = []
 class Motor:
 
     class Range:
@@ -165,14 +187,17 @@ class MotorController:
 
         return np.array(rotated_vectors).T
 
-
     def solve(self, wanted_vector, rotation):
         # print(self.motor_matrix)
         # print(self.rotate(rotation))
-        # raise Exception()
         # wanted_vector = 
-        # print(self.optimizer.optimize(np.array([0., 0., 0., 0., 0., 1.]), self.rotate(rotation)))
-        return self.optimizer.optimize(wanted_vector, self.rotate(rotation))
+        # print(self.optimizer.optimize(np.array([0., 0., 0., 0., 0., 2295.18311443701]), self.rotate(rotation)))
+        # raise Exception()
+        start = time.time()
+        optimized = self.optimizer.optimize(wanted_vector, self.rotate(rotation))
+        test.append(time.time() - start)
+        # if(not optimized[0]):
+        return optimized
     
     def set_motors(self, motor_speeds):
         # print([f"{motor_speeds[i]}, {i}" for i in range(len(motor_speeds))])

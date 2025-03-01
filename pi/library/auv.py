@@ -6,6 +6,7 @@ from .motor_controller import MotorController
 from .sensor_interface import SensorInterface
 from .mission import Path, Subtask
 from .logger import Logger, LogLevel
+from .simulation.simulation_animator import set_text
 
 class AUV:
     def __init__(self, *,
@@ -60,15 +61,17 @@ class AUV:
                 self.logger.log(f"Beginning task {task.name}")
                 # print(task.finished)
                 while(not task.finished):
-                    wanted_direction = task.update(self.sensors)
+                    wanted_direction = np.copy(task.update(self.sensors))
                     
                     # total_subtask = np.array([0., 0., 0.])
                     # print(wanted_direction)
                     # print(np.sum([subtask.update(self.sensors, wanted_direction) for subtask in self.subtasks]))
+                    set_text(str(" ".join(str(t) for t in task.update(self.sensors))))
                     for subtask in self.subtasks:
                         wanted_direction += subtask.update(self.sensors, wanted_direction)
+                    # set_text(f"dir: {str(wanted_direction[5])}, angle: {self.sensors.}")
                     # wanted_direction += np.sum([subtask.update(self.sensors, wanted_direction) for subtask in self.subtasks])
-                    
+
                     solved_motors = self.motor_controller.solve(
                         wanted_direction,
                         self.sensors.imu.get_rotation()
