@@ -1,6 +1,8 @@
 import numpy as np
 from abc import ABC, abstractmethod
 import quaternion
+import time
+
 
 # The abstract interface for interacting with the hardware; this should be
 # extended and registered into the auv
@@ -42,7 +44,7 @@ class DepthInterface(ABC):
         pass
 
     @abstractmethod
-    def overview(self) -> None:
+    def overview(self) -> str:
         pass
 
 class SensorInterface:
@@ -59,3 +61,14 @@ class SensorInterface:
     def overview(self) -> None:
         self.imu.overview()
         self.depth.overview()
+
+    def killed(self, average_time=1, max_dev=0.01, timestep=0.001) -> bool:
+        avg = 0
+        total = int(np.ceil(average_time / timestep))
+
+        for i in range(total):
+            avg += self.imu.get_accelerations()
+            time.sleep(timestep)
+
+        avg /= total
+        return np.all(abs(avg) <= max_dev)

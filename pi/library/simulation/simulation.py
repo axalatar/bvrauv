@@ -1,15 +1,18 @@
-from library.sensor_interface import DepthInterface, ImuInterface
+from ..sensor_interface import DepthInterface, ImuInterface
+from ..motor_controller import MotorController
 import numpy as np
 from scipy.ndimage import rotate
-from simulation_animator import SimulationAnimator
+from .simulation_animator import SimulationAnimator
 from scipy.spatial.transform import Rotation as R
+
+from ..simulation.simulation_animator import set_text
+
+import quaternion
 
 # kinda sucks, 2d
 class Simulation:
-    # class FakeDepthSensor(DepthInterface):
-        # def __init__(self):
 
-    def __init__(self, motor_locations, motor_directions, inertia):
+    def __init__(self, motor_locations, motor_directions, inertia, bounds, deadzone):
         self.location = np.array([0., 0.])
         self.velocity = np.array([0., 0.])
         self.acceleration = np.array([0., 0.])
@@ -20,23 +23,39 @@ class Simulation:
 
         self.motor_locations = motor_locations # relative to center
         self.motor_directions = motor_directions
-        self.motor_speeds = np.array([0 for _ in motor_directions])
-
+        self.motor_speeds = np.array([np.array([0., 0., 0.]) for _ in motor_directions])
+        # print(self.motor_speeds)
         self.moment_of_inertia = inertia
 
         self.timestep = 0.01 # in seconds
         self.prevtime = 0
         self.animator = SimulationAnimator(fps=1/self.timestep)
 
-        self.drag = 0.01
+        self.drag = 0
+
+        self.bounds = bounds
+        self.deadzone = deadzone
+
+        self.rng = np.random.default_rng(int(100))
+
+        self.real_accel = np.array([0., 0.])
+        self.prev_vel = np.array([0., 0.])
     
     def simulate(self, time):
+        # set_text(str(self.rotation))
+        
         for timepoint in np.arange(self.prevtime, time, self.timestep):
+            self.real_accel = (self.velocity - self.prev_vel) / self.timestep
+            self.prev_vel = self.acceleration
+
+            self.velocity += (self.rng.random() - 0.5) * 0.01
+            self.rotational_velocity += ((2 * (self.rng.random() - 0.5))) * 0.1
             self.location += self.velocity * self.timestep
             # print(self.acceleration)
             # print(self.timestep)
             self.velocity += self.acceleration * self.timestep
-            self.rotation += self.rotational_velocity * self.timestep
+            self.rotation = (self.rotation + self.rotational_velocity * self.timestep) % 360
+
             self.rotational_velocity += self.rotational_acceleration * self.timestep
             rotation = R.from_euler('z', np.deg2rad(self.rotation))
             
@@ -70,55 +89,93 @@ class Simulation:
     def update_motor_speeds(self, speeds):
         self.motor_speeds = [d * s for d, s in zip(self.motor_directions, speeds)]
 
-a = Simulation(
-        np.array([
-            np.array([-1., -1.]),
-            np.array([-1., 1.]),
-            np.array([1., 1.]),
-            np.array([1., -1.])
-        ]),
-        np.array([
-                np.array([1., -1.]),
-                np.array([1., 1.]),
-                np.array([1., -1.]),
-                np.array([1., 1.])
-        ]),
-        1/6
-)
-a.update_motor_speeds(np.array([1, 1, 1, 1]))
-a.simulate(2)
-a.update_motor_speeds(np.array([1, -1, -1, 1]))
-a.simulate(8)
-a.update_motor_speeds(np.array([0, 0, 0, 0]))
-a.simulate(8)
-# a.update_motor_speeds(np.array([0, 0, 0, 0]))
-# a.simulate(6)
-a.render()
+    class FakeDepthSensor(DepthInterface):
+        def __init__(self, deviation):
+            self.deviation = deviation
 
-class DepthSensor(DepthInterface):
+        def get_depth(self):
+            return 0.
+        
+        def initialize(self):
+            pass
 
-    def get_depth(self):
-        return 0.5
+        def overview(self) -> str:
+            return f"Simulated Depth Sensor -- Standard deviation: {self.deviation}. Currently hovercraft-only, no depth."
+        
+    class FakeIMU(ImuInterface):
+
+        def __init__(self, max_dev_accel, acceleration_function, rotation_function):
+            self.max_dev_accel = max_dev_accel
+            self.acceleration_function = acceleration_function
+            self.rotation_function = rotation_function
+
+        def get_accelerations(self):
+            acceleration = self.acceleration_function() + (np.random.rand(2) - 0.5) * 2 * self.max_dev_accel
+            return np.append(acceleration, 0) # bc it expects a 3d acceleration
+        
+        def get_rotation(self):
+            return self.rotation_function()
+
+        def initialize(self):
+            pass
+
+        def overview(self) -> str:
+            return f"Simulated IMU -- Standard deviation: {self.max_dev_accel}"
+        
+
+    def depth(self, dev):
+        return self.FakeDepthSensor(dev)
     
-    def initialize(self):
-        pass
-
-class IMU(ImuInterface):
-
-    def get_accelerations(self):
-        return [0.0, 0.0, 0.0]
-
-    def get_direction(self):
-        return np.quaternion([1, 0, 0, 0])
+    def imu(self, dev):
+        return self.FakeIMU(dev, lambda: self.real_accel, lambda: quaternion.from_euler_angles([np.deg2rad(self.rotation), 0., 0.]))
     
-    def get_rotation(self):
-        pass
+    def set(self, index, speed):
+            
+            speed = max(min(speed, self.bounds[index][1]), self.bounds[index][0])
+            if(self.deadzone[index][0] > speed > self.deadzone[index][1]):
+                speed = 0
+            # set_text(str(speed))
+            self.motor_speeds[index] = self.motor_directions[index] * speed
+            # print(self.motor_speeds)
+    
+    def set_motor(self, index):
+        return lambda speed: self.set(index, speed)
+    
+    def apply_force(self, *, thrust, rotation):
+        self.velocity += thrust
+        self.rotational_velocity += rotation
+        
 
-    def initialize(self):
-        pass
+        
 
-def emergency_kill():
-    pass
+# a = Simulation(
+#         np.array([
+#             np.array([-1., -1.]),
+#             np.array([-1., 1.]),
+#             np.array([1., 1.]),
+#             np.array([1., -1.])
+#         ]),
+#         np.array([
+#                 np.array([1., -1.]),
+#                 np.array([1., 1.]),
+#                 np.array([1., -1.]),
+#                 np.array([1., 1.])
+#         ]),
+#         1/6
+# )
+# # a.update_motor_speeds(np.array([1, 1, 1, 1]))
+# # a.simulate(2)
+# # a.update_motor_speeds(np.array([1, -1, -1, 1]))
+# # a.simulate(8)
+# # a.update_motor_speeds(np.array([0, 0, 0, 0]))
+# # a.simulate(8)
+# # # a.update_motor_speeds(np.array([0, 0, 0, 0]))
+# # # a.simulate(6)
+# # a.render()
 
-# def set_motor(id, speed):
-#     set_pin(id, speed)
+
+# # # def emergency_kill():
+#     # pass
+
+# # def set_motor(id, speed):
+# #     set_pin(id, speed)

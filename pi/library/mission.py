@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Tuple
 import numpy as np
 
-from pi.library.sensor_interface import SensorInterface
+from .sensor_interface import SensorInterface
 
 
 class Task(ABC):
@@ -12,8 +12,13 @@ class Task(ABC):
     def name(self) -> str:
         pass
 
+    @property
     @abstractmethod
-    def update(self, sensors: SensorInterface) -> None:
+    def finished(self) -> bool:
+        pass
+
+    @abstractmethod
+    def update(self, sensors: SensorInterface) -> np.ndarray:
         pass
 
 class Subtask(ABC):
@@ -23,7 +28,7 @@ class Subtask(ABC):
         pass
 
     @abstractmethod
-    def update(self, sensors: SensorInterface, wanted_speed: np.ndarray) -> None:
+    def update(self, sensors: SensorInterface, wanted_speed: np.ndarray) -> np.ndarray:
         pass
 
 
